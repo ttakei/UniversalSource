@@ -115,22 +115,8 @@ namespace UniversalSource
                 bodyStyle.normal.textColor = new Color(0.1f, 0.12f, 0.14f);
             }
 
-            var width = Mathf.Min(540f, Screen.width - 32f);
-            var height = Mathf.Min(470f, Screen.height - 32f);
-            float x;
-            float y;
-            if (Screen.width >= 860f + width + 48f)
-            {
-                x = Screen.width - width - 16f;
-                y = 16f;
-            }
-            else
-            {
-                x = 16f;
-                y = Mathf.Max(16f, Screen.height - height - 16f);
-            }
-
-            GUILayout.BeginArea(new Rect(x, y, width, height), GUI.skin.box);
+            SampleOverlayLayout.GetRects(out _, out var area);
+            GUILayout.BeginArea(area, GUI.skin.box);
             if (GUILayout.Button("安定化を8ステップ進める"))
             {
                 RunSteps(8);
@@ -558,6 +544,42 @@ namespace UniversalSource
             public Matrix4x4 Bc { get; }
             public Matrix4x4 Ad { get; }
             public Matrix4x4 Dc { get; }
+        }
+    }
+
+    static class SampleOverlayLayout
+    {
+        const float Margin = 12f;
+        const float Gap = 10f;
+
+        public static void GetRects(out Rect checkPanel, out Rect graphPanel)
+        {
+            var bounds = new Rect(
+                Margin,
+                Margin,
+                Mathf.Max(32f, Screen.width - Margin * 2f),
+                Mathf.Max(32f, Screen.height - Margin * 2f));
+
+            if (bounds.width >= 760f)
+            {
+                var checkWidth = Mathf.Clamp(bounds.width * 0.42f, 280f, 460f);
+                checkPanel = new Rect(bounds.x, bounds.y, checkWidth, bounds.height);
+                graphPanel = new Rect(
+                    bounds.x + checkWidth + Gap,
+                    bounds.y,
+                    bounds.width - checkWidth - Gap,
+                    bounds.height);
+                return;
+            }
+
+                var checkHeight = Mathf.Min(bounds.height * 0.38f, 260f);
+                checkHeight = Mathf.Clamp(checkHeight, 32f, Mathf.Max(32f, bounds.height - Gap - 32f));
+                checkPanel = new Rect(bounds.x, bounds.y, bounds.width, checkHeight);
+                graphPanel = new Rect(
+                    bounds.x,
+                    bounds.y + checkHeight + Gap,
+                    bounds.width,
+                    bounds.height - checkHeight - Gap);
         }
     }
 }

@@ -50,7 +50,7 @@ namespace UniversalSource
                 bodyStyle.normal.textColor = new Color(0.1f, 0.12f, 0.14f);
             }
 
-            var area = new Rect(16f, 16f, Mathf.Min(860f, Screen.width - 32f), Mathf.Min(560f, Screen.height - 32f));
+            SampleOverlayLayout.GetRects(out var area, out _);
             GUILayout.BeginArea(area, GUI.skin.box);
             if (GUILayout.Button("確認を再実行"))
             {
