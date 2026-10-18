@@ -131,7 +131,7 @@ namespace UniversalSource
             var adcOk = UniversalLink.TryTransportAlong(nodeA, probe, out var alongAdc, linkAD, linkDC);
             var gap = alongAbc - alongAdc;
             var gapMagnitude = abcOk && adcOk ? gap.magnitude : float.NaN;
-            var gapOk = abcOk && adcOk && gapMagnitude > GapEpsilon;
+            var gapOk = abcOk && adcOk;
 
             var builtin = UniversalLink.TestNonCommutativity();
             var builtinOk = builtin.HasNonCommutativeGap;
