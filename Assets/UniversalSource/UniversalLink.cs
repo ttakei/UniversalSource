@@ -7,7 +7,8 @@ namespace UniversalSource
     /// <summary>
     /// 2つの <see cref="SourceNode"/> を結ぶ向き付きの接続。
     /// 値は端点の世界座標ではなく、このリンクが持つ補正行列で相手の枠へ写す。
-    /// A→B には <see cref="TransportMatrix"/>、B→A にはその逆行列を使う。
+    /// 保存しているのは静止時の補正行列で、転送時は両端のスピン位相を非可換に掛ける。
+    /// A→B の実効行列はスピン結合 × 静止行列、B→A はその向きで組み直す。
     /// </summary>
     [DisallowMultipleComponent]
     [AddComponentMenu("UniversalSource/Universal Link")]
@@ -27,8 +28,14 @@ namespace UniversalSource
         public SourceNode EndpointA => endpointA;
         public SourceNode EndpointB => endpointB;
 
-        /// <summary>endpointA から endpointB へ運ぶときの補正行列。</summary>
-        public Matrix4x4 TransportMatrix => transportMatrix;
+        /// <summary>フィードバックが更新する静止補正。スピンは含まない。</summary>
+        public Matrix4x4 RestMatrix => transportMatrix;
+
+        /// <summary>endpointA から endpointB へ運ぶ実効補正。両端の位相で変化する。</summary>
+        public Matrix4x4 TransportMatrix
+        {
+            get { return Effective(endpointA, endpointB, transportMatrix); }
+        }
 
         void Reset()
         {
@@ -88,15 +95,34 @@ namespace UniversalSource
             EnsureTransport();
             if (from == endpointA)
             {
-                matrix = transportMatrix;
+                matrix = Effective(endpointA, endpointB, transportMatrix);
                 return true;
             }
 
-            if (from == endpointB && TryInvert(transportMatrix, out matrix))
+            if (from == endpointB && TryInvert(transportMatrix, out var reverseRest))
+            {
+                matrix = Effective(endpointB, endpointA, reverseRest);
                 return true;
+            }
 
             matrix = Matrix4x4.identity;
             return false;
+        }
+
+        /// <summary>
+        /// 出発側の位相は XY 回転、到着側の位相は XZ 回転。平面が違うので順序を入れ替えると残る。
+        /// </summary>
+        public static Matrix4x4 SpinCoupling(SourceNode from, SourceNode to)
+        {
+            if (from == null || to == null)
+                return Matrix4x4.identity;
+
+            return RotationXZ(to.Phase) * RotationXY(from.Phase);
+        }
+
+        static Matrix4x4 Effective(SourceNode from, SourceNode to, Matrix4x4 rest)
+        {
+            return SpinCoupling(from, to) * rest;
         }
 
         /// <summary>from の枠にある値へ、その向きの補正行列を掛ける。</summary>

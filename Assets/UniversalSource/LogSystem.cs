@@ -6,7 +6,7 @@ namespace UniversalSource
 {
     /// <summary>
     /// 4ノードのセルで、A→B→C と A→D→C の到着差を曲率のログとして残す。
-    /// StabilizeStep は関連リンクの補正行列を、その差が縮む向きへ微小に戻す。
+    /// StabilizeStep は静止補正を、スピンが作る非可換なズレへ寄せる。ゼロには潰さない。
     /// 横軸はログ自身の歩数であり、ワールド時刻でも絶対座標でもない。
     /// </summary>
     public readonly struct CurvatureResidual
@@ -18,6 +18,7 @@ namespace UniversalSource
             Vector4 residual,
             float energy,
             float plaquetteEnergy,
+            float spinPlaquetteEnergy,
             Vector4 alongAbc,
             Vector4 alongAdc)
         {
@@ -27,6 +28,7 @@ namespace UniversalSource
             Residual = residual;
             Energy = energy;
             PlaquetteEnergy = plaquetteEnergy;
+            SpinPlaquetteEnergy = spinPlaquetteEnergy;
             AlongAbc = alongAbc;
             AlongAdc = alongAdc;
         }
@@ -37,6 +39,7 @@ namespace UniversalSource
         public Vector4 Residual { get; }
         public float Energy { get; }
         public float PlaquetteEnergy { get; }
+        public float SpinPlaquetteEnergy { get; }
         public Vector4 AlongAbc { get; }
         public Vector4 AlongAdc { get; }
     }
@@ -48,7 +51,7 @@ namespace UniversalSource
     {
         public const int LogCapacity = 96;
         const float SingularDeterminant = 1e-6f;
-        const float EnergyRiseTolerance = 1e-5f;
+        const float ExcessRiseTolerance = 0.05f;
 
         [SerializeField] SourceNode nodeA = null;
         [SerializeField] SourceNode nodeB = null;
@@ -58,8 +61,10 @@ namespace UniversalSource
         [SerializeField] UniversalLink linkBC = null;
         [SerializeField] UniversalLink linkAD = null;
         [SerializeField] UniversalLink linkDC = null;
-        [SerializeField] float feedbackGain = 0.1f;
-        [SerializeField] int demoStepsOnStart = 24;
+        [SerializeField] float feedbackGain = 0.2f;
+        [SerializeField] int demoStepsOnStart = 0;
+        [SerializeField] bool liveStep = true;
+        [SerializeField] int framesPerStep = 6;
         [SerializeField] bool showOverlay = true;
 
         readonly List<CurvatureResidual> log = new List<CurvatureResidual>(LogCapacity);
@@ -71,6 +76,7 @@ namespace UniversalSource
         string status = "";
         Vector2 scroll;
         GUIStyle bodyStyle;
+        int frameCursor;
 
         public IReadOnlyList<CurvatureResidual> Residuals => log;
         public float InitialPlaquetteEnergy => initialPlaquetteEnergy;
@@ -96,7 +102,24 @@ namespace UniversalSource
             }
 
             RunSteps(demoStepsOnStart);
-            Debug.Log(overlayText);
+            LogSteadyState();
+        }
+
+        void Update()
+        {
+            if (!liveStep)
+                return;
+
+            frameCursor++;
+            if (frameCursor < Mathf.Max(1, framesPerStep))
+                return;
+
+            frameCursor = 0;
+            if (!StabilizeStep())
+                return;
+
+            if (feedbackStep <= 4 || feedbackStep % 10 == 0)
+                LogSteadyState();
         }
 
         void OnGUI()
@@ -120,7 +143,7 @@ namespace UniversalSource
             if (GUILayout.Button("安定化を8ステップ進める"))
             {
                 RunSteps(8);
-                Debug.Log(overlayText);
+                LogSteadyState();
             }
 
             var chart = GUILayoutUtility.GetRect(10f, 150f, GUILayout.ExpandWidth(true));
@@ -143,6 +166,12 @@ namespace UniversalSource
 
             var pathAbc = bc * ab;
             var pathAdc = dc * ad;
+            if (!TrySpinProducts(out var spinAbc, out var spinAdc))
+            {
+                status = "スピン結合を計算できない。";
+                return false;
+            }
+
             var probe = CommunicationProbe();
             if (!UniversalLink.TryTransportAlong(nodeA, probe, out var alongAbc, linkAB, linkBC)
                 || !UniversalLink.TryTransportAlong(nodeA, probe, out var alongAdc, linkAD, linkDC))
@@ -159,6 +188,7 @@ namespace UniversalSource
                 residualVector,
                 residualVector.sqrMagnitude,
                 FrobeniusGap(pathAbc, pathAdc),
+                FrobeniusGap(spinAbc, spinAdc),
                 alongAbc,
                 alongAdc);
             return true;
@@ -177,7 +207,7 @@ namespace UniversalSource
         }
 
         /// <summary>
-        /// 経路差が縮む向きに、関連する4リンクの補正行列を1回だけ更新し、結果をログへ足す。
+        /// 各ノードのスピンを1歩進め、静止補正をスピン由来の経路差へ寄せてログへ残す。
         /// 偶数歩は到着側（B→C と D→C）、奇数歩は出発側（A→B と A→D）を動かす。
         /// </summary>
         [ContextMenu("安定化を1ステップ")]
@@ -193,10 +223,14 @@ namespace UniversalSource
             if (log.Count == 0 && !RecordCurrent())
                 return false;
 
-            if (!TryReadPathMatrices(out var ab, out var bc, out var ad, out var dc))
+            AdvanceSpins();
+            if (!TryReadPathMatrices(out var ab, out var bc, out var ad, out var dc)
+                || !TrySpinProducts(out var spinAbc, out var spinAdc))
                 return false;
 
             var before = FrobeniusGap(bc * ab, dc * ad);
+            var spinGap = FrobeniusGap(spinAbc, spinAdc);
+            var excessBefore = Mathf.Abs(before - spinGap);
             var stored = CaptureStored();
             var gain = Mathf.Clamp(feedbackGain, 0f, 0.5f);
             var adjustArrivalLinks = (feedbackStep % 2) == 0;
@@ -218,20 +252,21 @@ namespace UniversalSource
             }
 
             var after = FrobeniusGap(bc * ab, dc * ad);
-            if (after > before + EnergyRiseTolerance)
+            var excessAfter = Mathf.Abs(after - spinGap);
+            if (excessAfter > excessBefore + ExcessRiseTolerance)
             {
                 Restore(stored);
-                status = "この歩はエネルギーが増えるため、行列を戻した。";
+                status = "この歩はスピン基準から離れるため、静止補正を戻した。";
                 RecordCurrent();
                 return true;
             }
 
             status = string.Format(
                 CultureInfo.InvariantCulture,
-                "歩 {0}: エネルギー {1:F5} → {2:F5}",
+                "歩 {0}: ズレ {1:F4}、スピン基準 {2:F4}",
                 feedbackStep,
-                before,
-                after);
+                Mathf.Sqrt(after),
+                Mathf.Sqrt(spinGap));
             RecordCurrent();
             return true;
         }
@@ -265,31 +300,41 @@ namespace UniversalSource
 
         bool TryApplyFeedback(Matrix4x4 ab, Matrix4x4 bc, Matrix4x4 ad, Matrix4x4 dc, float gain, bool adjustArrivalLinks)
         {
-            var pathAbc = bc * ab;
-            var pathAdc = dc * ad;
-            var target = Lerp(pathAbc, pathAdc, 0.5f);
+            if (!TrySpinProducts(out var pureAbc, out var pureAdc))
+                return false;
 
             if (adjustArrivalLinks)
             {
                 if (!TryInvert(ab, out var inverseAb) || !TryInvert(ad, out var inverseAd))
                     return false;
-                var nextBc = NormalizeLerp(bc, target * inverseAb, gain);
-                var nextDc = NormalizeLerp(dc, target * inverseAd, gain);
-                return nextBc.HasValue
-                    && nextDc.HasValue
-                    && TrySetPathMatrix(linkBC, nodeB, nextBc.Value)
-                    && TrySetPathMatrix(linkDC, nodeD, nextDc.Value);
+                return TryStoreBlendedEffective(linkBC, nodeB, nodeC, bc, pureAbc * inverseAb, gain)
+                    && TryStoreBlendedEffective(linkDC, nodeD, nodeC, dc, pureAdc * inverseAd, gain);
             }
 
             if (!TryInvert(bc, out var inverseBc) || !TryInvert(dc, out var inverseDc))
                 return false;
 
-            var nextAb = NormalizeLerp(ab, inverseBc * target, gain);
-            var nextAd = NormalizeLerp(ad, inverseDc * target, gain);
-            return nextAb.HasValue
-                && nextAd.HasValue
-                && TrySetPathMatrix(linkAB, nodeA, nextAb.Value)
-                && TrySetPathMatrix(linkAD, nodeA, nextAd.Value);
+            return TryStoreBlendedEffective(linkAB, nodeA, nodeB, ab, inverseBc * pureAbc, gain)
+                && TryStoreBlendedEffective(linkAD, nodeA, nodeD, ad, inverseDc * pureAdc, gain);
+        }
+
+        bool TrySpinProducts(out Matrix4x4 pureAbc, out Matrix4x4 pureAdc)
+        {
+            var spinAb = UniversalLink.SpinCoupling(nodeA, nodeB);
+            var spinBc = UniversalLink.SpinCoupling(nodeB, nodeC);
+            var spinAd = UniversalLink.SpinCoupling(nodeA, nodeD);
+            var spinDc = UniversalLink.SpinCoupling(nodeD, nodeC);
+            pureAbc = spinBc * spinAb;
+            pureAdc = spinDc * spinAd;
+            return true;
+        }
+
+        void AdvanceSpins()
+        {
+            nodeA.AdvancePhase();
+            nodeB.AdvancePhase();
+            nodeC.AdvancePhase();
+            nodeD.AdvancePhase();
         }
 
         bool HasCell()
@@ -320,15 +365,30 @@ namespace UniversalSource
                 && linkDC.TryGetTransportMatrix(nodeD, out dc);
         }
 
-        bool TrySetPathMatrix(UniversalLink link, SourceNode from, Matrix4x4 pathMatrix)
+        bool TryStoreBlendedEffective(
+            UniversalLink link,
+            SourceNode from,
+            SourceNode to,
+            Matrix4x4 currentEffective,
+            Matrix4x4 desiredEffective,
+            float gain)
         {
+            var blended = Lerp(currentEffective, desiredEffective, gain);
+            var spin = UniversalLink.SpinCoupling(from, to);
+            if (!TryInvert(spin, out var inverseSpin))
+                return false;
+
+            var rest = inverseSpin * blended;
+            if (!TryNormalizeDeterminant(ref rest))
+                return false;
+
             if (link.EndpointA == from)
             {
-                link.SetTransportMatrix(pathMatrix);
+                link.SetTransportMatrix(rest);
                 return true;
             }
 
-            if (link.EndpointB == from && TryInvert(pathMatrix, out var stored))
+            if (link.EndpointB == from && TryInvert(rest, out var stored))
             {
                 link.SetTransportMatrix(stored);
                 return true;
@@ -348,10 +408,10 @@ namespace UniversalSource
         StoredMatrices CaptureStored()
         {
             return new StoredMatrices(
-                linkAB.TransportMatrix,
-                linkBC.TransportMatrix,
-                linkAD.TransportMatrix,
-                linkDC.TransportMatrix);
+                linkAB.RestMatrix,
+                linkBC.RestMatrix,
+                linkAD.RestMatrix,
+                linkDC.RestMatrix);
         }
 
         void Restore(StoredMatrices stored)
@@ -377,27 +437,43 @@ namespace UniversalSource
         {
             var culture = CultureInfo.InvariantCulture;
             var latest = Latest;
-            var lines = new List<string>
+            var lines = new List<string>();
+            if (log.Count == 0)
             {
-                log.Count == 0
-                    ? "結果: ログは空。"
-                    : string.Format(
-                        culture,
-                        "セルエネルギー: 開始 {0:F5}、現在 {1:F5}。蓄積ログの合計 {2:F5}。",
-                        initialPlaquetteEnergy,
-                        CurrentPlaquetteEnergy,
-                        accumulatedLogEnergy),
-                "横軸はログの歩数。棒は各歩のセルエネルギー。",
-                status
-            };
+                lines.Add("結果: ログは空。");
+            }
+            else
+            {
+                var currentGap = Mathf.Sqrt(latest.PlaquetteEnergy);
+                var spinGap = Mathf.Sqrt(latest.SpinPlaquetteEnergy);
+                lines.Add(string.Format(
+                    culture,
+                    "定常ズレの大きさ: {0:F4}",
+                    currentGap));
+                lines.Add(string.Format(
+                    culture,
+                    "スピン基準: {0:F4}    過剰: {1:F4}    直近平均: {2:F4}",
+                    spinGap,
+                    Mathf.Abs(currentGap - spinGap),
+                    RecentMeanGap()));
+            }
+
+            lines.Add("棒は経路差の大きさ。黄色い印はスピンが維持する基準。");
+            lines.Add(status);
 
             if (log.Count > 0)
             {
                 lines.Add(string.Format(
                     culture,
-                    "残差 A→B→C − A→D→C: {0}。大きさの二乗 {1:F5}。",
-                    FormatVector(latest.Residual),
-                    latest.Energy));
+                    "残差 A→B→C − A→D→C: {0}",
+                    FormatVector(latest.Residual)));
+                lines.Add(string.Format(
+                    culture,
+                    "位相 A {0:F3}  B {1:F3}  C {2:F3}  D {3:F3}",
+                    nodeA.Phase,
+                    nodeB.Phase,
+                    nodeC.Phase,
+                    nodeD.Phase));
                 lines.Add(string.Format(
                     culture,
                     "A→B→C {0}",
@@ -423,18 +499,21 @@ namespace UniversalSource
             if (log.Count == 0)
                 return;
 
-            var maxEnergy = 0f;
+            var maxGap = 1e-8f;
             for (var i = 0; i < log.Count; i++)
-                maxEnergy = Mathf.Max(maxEnergy, log[i].PlaquetteEnergy);
-            if (maxEnergy < 1e-8f)
-                maxEnergy = 1e-8f;
+            {
+                maxGap = Mathf.Max(maxGap, Mathf.Sqrt(log[i].PlaquetteEnergy));
+                maxGap = Mathf.Max(maxGap, Mathf.Sqrt(log[i].SpinPlaquetteEnergy));
+            }
 
             var inner = new Rect(rect.x + 6f, rect.y + 6f, rect.width - 12f, rect.height - 12f);
             var slot = inner.width / log.Count;
             var previous = GUI.color;
             for (var i = 0; i < log.Count; i++)
             {
-                var height = inner.height * (log[i].PlaquetteEnergy / maxEnergy);
+                var gap = Mathf.Sqrt(log[i].PlaquetteEnergy);
+                var spinGap = Mathf.Sqrt(log[i].SpinPlaquetteEnergy);
+                var height = inner.height * (gap / maxGap);
                 var bar = new Rect(
                     inner.x + slot * i + 1f,
                     inner.y + inner.height - height,
@@ -443,17 +522,44 @@ namespace UniversalSource
                 var age = log.Count == 1 ? 1f : i / (float)(log.Count - 1);
                 GUI.color = Color.Lerp(new Color(0.75f, 0.35f, 0.2f), new Color(0.15f, 0.4f, 0.55f), age);
                 GUI.DrawTexture(bar, Texture2D.whiteTexture);
+
+                var markHeight = inner.height * (spinGap / maxGap);
+                GUI.color = new Color(0.95f, 0.75f, 0.15f);
+                GUI.DrawTexture(
+                    new Rect(bar.x, inner.y + inner.height - markHeight, bar.width, 2f),
+                    Texture2D.whiteTexture);
             }
 
             GUI.color = previous;
         }
 
-        static Matrix4x4? NormalizeLerp(Matrix4x4 current, Matrix4x4 target, float gain)
+        float RecentMeanGap()
         {
-            var blended = Lerp(current, target, gain);
-            if (!TryNormalizeDeterminant(ref blended))
-                return null;
-            return blended;
+            if (log.Count == 0)
+                return 0f;
+
+            var count = Mathf.Min(16, log.Count);
+            var sum = 0f;
+            for (var i = log.Count - count; i < log.Count; i++)
+                sum += Mathf.Sqrt(log[i].PlaquetteEnergy);
+            return sum / count;
+        }
+
+        void LogSteadyState()
+        {
+            if (log.Count == 0)
+                return;
+
+            var latest = Latest;
+            var currentGap = Mathf.Sqrt(latest.PlaquetteEnergy);
+            var spinGap = Mathf.Sqrt(latest.SpinPlaquetteEnergy);
+            Debug.Log(string.Format(
+                CultureInfo.InvariantCulture,
+                "[LogSystem] 定常ズレの大きさ {0:F4}、スピン基準 {1:F4}、過剰 {2:F4}、直近平均 {3:F4}",
+                currentGap,
+                spinGap,
+                Mathf.Abs(currentGap - spinGap),
+                RecentMeanGap()));
         }
 
         static Matrix4x4 Lerp(Matrix4x4 from, Matrix4x4 to, float gain)

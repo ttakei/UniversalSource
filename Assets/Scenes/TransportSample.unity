@@ -525,6 +525,9 @@ MonoBehaviour:
     e32: 0
     e33: 1
   properTime: 0
+  phase: 0.35
+  spinRate: 0.17
+  spinAmplitude: 0.08
 --- !u!1 &100011
 GameObject:
   m_ObjectHideFlags: 0
@@ -588,6 +591,9 @@ MonoBehaviour:
     e32: 0
     e33: 1
   properTime: 0
+  phase: 1.15
+  spinRate: 0.23
+  spinAmplitude: 0.11
 --- !u!1 &100021
 GameObject:
   m_ObjectHideFlags: 0
@@ -651,6 +657,9 @@ MonoBehaviour:
     e32: 0
     e33: 1
   properTime: 0
+  phase: 0.55
+  spinRate: 0.13
+  spinAmplitude: 0.07
 --- !u!1 &100031
 GameObject:
   m_ObjectHideFlags: 0
@@ -714,6 +723,9 @@ MonoBehaviour:
     e32: 0
     e33: 1
   properTime: 0
+  phase: -0.8
+  spinRate: 0.19
+  spinAmplitude: 0.09
 --- !u!1 &100041
 GameObject:
   m_ObjectHideFlags: 0
@@ -1070,8 +1082,10 @@ MonoBehaviour:
   linkBC: {fileID: 100053}
   linkAD: {fileID: 100063}
   linkDC: {fileID: 100073}
-  feedbackGain: 0.1
-  demoStepsOnStart: 24
+  feedbackGain: 0.2
+  demoStepsOnStart: 0
+  liveStep: 1
+  framesPerStep: 6
   showOverlay: 1
 --- !u!1660057539 &9223372036854775807
 SceneRoots:

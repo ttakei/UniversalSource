@@ -16,6 +16,13 @@ namespace UniversalSource
         [SerializeField] Vector4 state = new Vector4(1f, 0f, 0f, 0f);
         [SerializeField] Matrix4x4 localEvolution = Matrix4x4.identity;
         [SerializeField] int properTime;
+        [SerializeField] float phase;
+        [SerializeField] float spinRate;
+        [SerializeField] float spinAmplitude;
+
+        float phaseAnchor;
+        int spinClock;
+        bool phaseAnchorReady;
 
         readonly List<UniversalLink> links = new List<UniversalLink>(4);
         readonly List<ReceivedSignal> inbox = new List<ReceivedSignal>(InboxCapacity);
@@ -24,6 +31,14 @@ namespace UniversalSource
 
         /// <summary>このノードが自ら進めた離散ステップ数。共有時計ではない。</summary>
         public int ProperTime => properTime;
+
+        /// <summary>内部スピンの位相角（ラジアン）。リンクの補正行列がこれを読む。</summary>
+        public float Phase => phase;
+
+        /// <summary>位相振動の角速度。このノードの歩みだけで進む。</summary>
+        public float SpinRate => spinRate;
+
+        public float SpinAmplitude => spinAmplitude;
 
         public Matrix4x4 LocalEvolution => localEvolution;
         public IReadOnlyList<UniversalLink> Links => links;
@@ -34,12 +49,16 @@ namespace UniversalSource
             state = new Vector4(1f, 0f, 0f, 0f);
             localEvolution = Matrix4x4.identity;
             properTime = 0;
+            phase = 0f;
+            spinRate = 0f;
+            spinAmplitude = 0f;
         }
 
         void Awake()
         {
             if (IsZeroMatrix(localEvolution))
                 localEvolution = Matrix4x4.identity;
+            EnsurePhaseAnchor();
         }
 
         public void SetState(Vector4 value)
@@ -52,6 +71,30 @@ namespace UniversalSource
             localEvolution = IsZeroMatrix(evolution) ? Matrix4x4.identity : evolution;
         }
 
+        public void SetPhase(float radians)
+        {
+            phase = WrapPhase(radians);
+            phaseAnchor = phase;
+            spinClock = 0;
+            phaseAnchorReady = true;
+        }
+
+        public void SetSpin(float rate, float amplitude)
+        {
+            spinRate = rate;
+            spinAmplitude = amplitude;
+        }
+
+        /// <summary>
+        /// 位相をこのノードのスピンだけ進める。基準角のまわりを spinAmplitude で揺れる。
+        /// </summary>
+        public void AdvancePhase()
+        {
+            EnsurePhaseAnchor();
+            spinClock++;
+            phase = WrapPhase(phaseAnchor + spinAmplitude * Mathf.Sin(spinClock * spinRate));
+        }
+
         /// <summary>
         /// このノード自身の時計を 1 ステップ進める。状態にはノード固有の発展行列だけを掛ける。
         /// </summary>
@@ -62,6 +105,7 @@ namespace UniversalSource
                 localEvolution = Matrix4x4.identity;
 
             state = localEvolution * state;
+            AdvancePhase();
             properTime++;
         }
 
@@ -137,6 +181,21 @@ namespace UniversalSource
         public void ClearInbox()
         {
             inbox.Clear();
+        }
+
+        void EnsurePhaseAnchor()
+        {
+            if (phaseAnchorReady)
+                return;
+
+            phaseAnchor = phase;
+            phaseAnchorReady = true;
+        }
+
+        public static float WrapPhase(float radians)
+        {
+            const float twoPi = Mathf.PI * 2f;
+            return Mathf.Repeat(radians + Mathf.PI, twoPi) - Mathf.PI;
         }
 
         internal static bool IsZeroMatrix(Matrix4x4 matrix)

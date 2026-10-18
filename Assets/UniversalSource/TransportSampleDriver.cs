@@ -79,10 +79,10 @@ namespace UniversalSource
                 return false;
             }
 
-            var wired = linkAB.Bind(nodeA, nodeB, linkAB.TransportMatrix)
-                && linkBC.Bind(nodeB, nodeC, linkBC.TransportMatrix)
-                && linkAD.Bind(nodeA, nodeD, linkAD.TransportMatrix)
-                && linkDC.Bind(nodeD, nodeC, linkDC.TransportMatrix)
+            var wired = linkAB.Bind(nodeA, nodeB, linkAB.RestMatrix)
+                && linkBC.Bind(nodeB, nodeC, linkBC.RestMatrix)
+                && linkAD.Bind(nodeA, nodeD, linkAD.RestMatrix)
+                && linkDC.Bind(nodeD, nodeC, linkDC.RestMatrix)
                 && nodeA.LinkTo(nodeB) == linkAB
                 && nodeB.LinkTo(nodeC) == linkBC
                 && nodeA.LinkTo(nodeD) == linkAD
